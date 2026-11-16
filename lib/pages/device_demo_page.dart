@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:io';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -28,7 +28,8 @@ class _DeviceDemoPageState extends State<DeviceDemoPage> {
   final _location = DeviceLocationService();
   final _uploader = PhotoUploadService();
 
-  String? _photoPath;
+  String? _photoBase64;
+  String? _photoName;
   String? _storagePath;
   String? _publicUrl;
   double? _latitude;
@@ -61,7 +62,8 @@ class _DeviceDemoPageState extends State<DeviceDemoPage> {
       if (!mounted) return;
       setState(() {
         _nameController.text = draft['name'] as String? ?? '';
-        _photoPath = draft['photoPath'] as String?;
+        _photoBase64 = draft['photoBase64'] as String?;
+        _photoName = draft['photoName'] as String?;
         _storagePath = draft['storagePath'] as String?;
         _publicUrl = draft['publicUrl'] as String?;
         final lat = draft['latitude'];
@@ -76,21 +78,32 @@ class _DeviceDemoPageState extends State<DeviceDemoPage> {
   }
 
   Future<void> _recoverInterruptedPicker() async {
-    if (defaultTargetPlatform != TargetPlatform.android) return;
-    final lost = await _picker.retrieveLostData();
-    if (lost.isEmpty) return;
-    if (lost.files != null && lost.files!.isNotEmpty) {
-      await _acceptPhoto(lost.files!.first);
-      _notice('Foto dari proses kamera/galeri yang terputus dipulihkan.');
-    } else if (lost.exception != null) {
-      _notice('Pemulihan foto gagal: ${lost.exception}');
+    // Flutter Web tidak mendukung retrieveLostData().
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
+      return;
+    }
+
+    try {
+      final lost = await _picker.retrieveLostData();
+
+      if (lost.isEmpty) return;
+
+      if (lost.files != null && lost.files!.isNotEmpty) {
+        await _acceptPhoto(lost.files!.first);
+        _notice('Foto dari proses kamera/galeri yang terputus dipulihkan.');
+      } else if (lost.exception != null) {
+        _notice('Pemulihan foto gagal: ${lost.exception}');
+      }
+    } catch (error) {
+      _notice('Pemulihan foto tidak tersedia: $error');
     }
   }
 
   Future<void> _saveDraft({bool showMessage = true}) async {
     await _drafts.save({
       'name': _nameController.text.trim(),
-      'photoPath': _photoPath,
+      'photoBase64': _photoBase64,
+      'photoName': _photoName,
       'latitude': _latitude,
       'longitude': _longitude,
       'storagePath': _storagePath,
@@ -100,13 +113,17 @@ class _DeviceDemoPageState extends State<DeviceDemoPage> {
   }
 
   Future<void> _acceptPhoto(XFile picked) async {
-    final permanentPath = await _drafts.savePermanentPhoto(picked);
+    final photoBase64 = await _drafts.savePermanentPhoto(picked);
+
     if (!mounted) return;
+
     setState(() {
-      _photoPath = permanentPath;
+      _photoBase64 = photoBase64;
+      _photoName = picked.name;
       _storagePath = null;
       _publicUrl = null;
     });
+
     await _saveDraft(showMessage: false);
   }
 
@@ -172,14 +189,18 @@ class _DeviceDemoPageState extends State<DeviceDemoPage> {
       _notice('Isi nama kos sebelum mengunggah foto.');
       return;
     }
-    final path = _photoPath;
-    if (path == null || !File(path).existsSync()) {
+    final photoBase64 = _photoBase64;
+
+    if (photoBase64 == null) {
       _notice('Ambil/pilih foto terlebih dahulu.');
       return;
     }
     setState(() => _busy = true);
     try {
-      final result = await _uploader.upload(File(path));
+      final result = await _uploader.upload(
+        base64Decode(_photoBase64!),
+        _photoName ?? 'photo.jpg',
+      );
       if (!mounted) return;
       setState(() {
         _storagePath = result.storagePath;
@@ -200,7 +221,7 @@ class _DeviceDemoPageState extends State<DeviceDemoPage> {
 
   @override
   Widget build(BuildContext context) {
-    final photoExists = _photoPath != null && File(_photoPath!).existsSync();
+    final photoExists = _photoBase64 != null;
     return Scaffold(
       appBar: AppBar(
         title: const Text('KosFinder · Device Demo'),
@@ -254,9 +275,10 @@ class _DeviceDemoPageState extends State<DeviceDemoPage> {
           if (photoExists)
             ClipRRect(
               borderRadius: BorderRadius.circular(12),
-              child: Image.file(
-                File(_photoPath!),
+              child: Image.memory(
+                base64Decode(_photoBase64!),
                 height: 200,
+                width: double.infinity,
                 fit: BoxFit.cover,
               ),
             )
